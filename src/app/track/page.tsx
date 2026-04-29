@@ -1,291 +1,201 @@
-'use client';
+'use client'
 
-import { useState } from 'react';
+import { useState } from 'react'
+import type { OrderStatus } from '@/types'
+import { STATUS_CONFIG } from '@/types'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface StatusHistoryItem {
-  status: string;
-  label: string;
-  timestamp: string;
-}
-
-interface OrderItem {
-  name: string;
-  quantity: number;
-  variant?: string;
-}
-
-interface TrackResult {
-  order_number: string;
-  customer_name: string;
-  status: string;
-  ordered_at: string;
-  confirmed_at: string;
-  tracking_id?: string | null;
-  postex_status?: string | null;
-  items: OrderItem[];
-  status_history: StatusHistoryItem[];
-}
-
-// ─── Helpers ───────────────────────────────────────────────────────────────────
-function calcDelivery(confirmedAt?: string) {
-  if (!confirmedAt) return { minDate: '-', maxDate: '-', daysLeft: 0, progress: 0 };
-
-  const start = new Date(confirmedAt);
-  if (isNaN(start.getTime())) return { minDate: '-', maxDate: '-', daysLeft: 0, progress: 0 };
-
-  start.setHours(0, 0, 0, 0);
-
-  const minDay = new Date(start);
-  minDay.setDate(start.getDate() + 6);
-
-  const maxDay = new Date(start);
-  maxDay.setDate(start.getDate() + 9);
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const daysPassed = Math.floor((today.getTime() - start.getTime()) / 86400000);
-  const daysLeft = Math.max(0, 9 - daysPassed);
-  const progress = Math.min(100, Math.round((daysPassed / 9) * 100));
-
-  const fmt = (d: Date) =>
-    d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' });
-
-  return { minDate: fmt(minDay), maxDate: fmt(maxDay), daysLeft, progress };
-}
-
-function fmtDate(iso?: string) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  return isNaN(d.getTime())
-    ? '-'
-    : d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-function fmtDateTime(iso?: string) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  return isNaN(d.getTime())
-    ? '-'
-    : d.toLocaleString('en-PK', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-}
-
-// ─── Status Logic ─────────────────────────────────────────────────────────────
-function getDisplayStatus(order: TrackResult) {
-  if (order.status === 'delivered') {
-    return { label: 'Delivered', isDelivered: true, isShipped: false, isMaking: false };
+interface TrackingResult {
+  order: {
+    orderNumber: string
+    customerName: string | null
+    status: OrderStatus
+    trackingId: string | null
+    postexUrl: string | null
+    lineItems: { name: string; quantity: number }[]
+    createdAt: string
+    updatedAt: string
   }
-  if (order.tracking_id) {
-    return { label: 'Shipped', isDelivered: false, isShipped: true, isMaking: false };
-  }
-  return { label: 'Making in Progress', isDelivered: false, isShipped: false, isMaking: true };
+  history: { status: OrderStatus; note: string | null; changed_at: string }[]
 }
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
+const ALL_STATUSES: OrderStatus[] = [
+  'in_process', 'printing_done', 'packed', 'ready_to_ship', 'shipped', 'delivered'
+]
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleString('en-PK', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  })
+}
+
 export default function TrackPage() {
-  const [tab, setTab] = useState<'order' | 'phone'>('order');
-  const [query, setQuery] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<TrackResult | null>(null);
-  const [error, setError] = useState('');
+  const [tab, setTab] = useState<'order' | 'phone'>('order')
+  const [orderNumber, setOrderNumber] = useState('')
+  const [phone, setPhone] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<TrackingResult | null>(null)
 
-  async function handleSearch() {
-    const q = query.trim();
-    if (!q) return;
-
-    setLoading(true);
-    setError('');
-    setResult(null);
+  async function handleTrack() {
+    if (tab === 'order' && !orderNumber.trim()) { setError('Please enter your order number.'); return }
+    if (tab === 'phone' && !phone.trim()) { setError('Please enter your phone number.'); return }
+    setLoading(true); setError(''); setResult(null)
 
     try {
-      const body = tab === 'order' ? { order_number: q } : { phone: q };
-
       const res = await fetch('/api/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-
-      console.log('API RESPONSE:', data); // DEBUG IMPORTANT
-
-      // ─── FIX: flexible API parsing ───
-      const order = data?.order ?? data?.data ?? data;
-
-      if (!res.ok || !order?.order_number) {
-        setError(data?.error || 'Order does not exist');
-        return;
-      }
-
-      setResult({
-        ...order,
-        items: order?.items ?? [],
-        status_history: order?.status_history ?? [],
-      });
+        body: JSON.stringify(
+          tab === 'order'
+            ? { orderNumber }
+            : { phone }
+        ),
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.error || 'Something went wrong.'); return }
+      setResult(data)
     } catch {
-      setError('Something went wrong. Please try again.');
+      setError('Network error. Please try again.')
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
   }
 
+  const currentStep = result ? STATUS_CONFIG[result.order.status].step : 0
+  const isShipped = result?.order.status === 'shipped' || result?.order.status === 'delivered'
+
+  const tabStyle = (active: boolean) => ({
+    flex: 1, padding: '10px', borderRadius: '10px', border: 'none',
+    background: active ? '#6366f1' : '#f3f4f6',
+    color: active ? '#fff' : '#6b7280',
+    fontWeight: '600' as const, fontSize: '14px', cursor: 'pointer',
+  })
+
   return (
-    <main style={styles.main}>
-      <div style={styles.tracker}>
+    <main style={{ minHeight: '100vh', background: '#f8f7f4', fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif" }}>
+      <div style={{ background: '#1a1a2e', padding: '20px 24px' }}>
+        <div style={{ color: '#fff', fontSize: '18px', fontWeight: '700' }}>📦 Order Tracker</div>
+      </div>
 
-        {/* Header */}
-        <div style={styles.appHeader}>
-          <span style={styles.logo}>KOVR</span>
-          <span style={styles.appSub}>Order Tracker</span>
-        </div>
+      <div style={{ maxWidth: '640px', margin: '0 auto', padding: '32px 20px' }}>
+        <div style={{ background: '#fff', borderRadius: '16px', padding: '28px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)', marginBottom: '24px' }}>
+          <h1 style={{ fontSize: '22px', fontWeight: '700', color: '#1a1a2e', margin: '0 0 6px' }}>Track Your Order</h1>
+          <p style={{ fontSize: '14px', color: '#6b7280', margin: '0 0 24px' }}>
+            Track using your order number or phone number.
+          </p>
 
-        {/* Tabs */}
-        <div style={styles.tabs}>
-          {(['order', 'phone'] as const).map((t) => (
-            <button
-              key={t}
-              style={{ ...styles.tab, ...(tab === t ? styles.tabActive : {}) }}
-              onClick={() => {
-                setTab(t);
-                setQuery('');
-                setResult(null);
-                setError('');
-              }}
-            >
-              {t === 'order' ? 'Order Number' : 'Phone Number'}
+          {/* Tabs */}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
+            <button onClick={() => { setTab('order'); setError(''); setResult(null) }} style={tabStyle(tab === 'order')}>
+              Order Number
             </button>
-          ))}
-        </div>
+            <button onClick={() => { setTab('phone'); setError(''); setResult(null) }} style={tabStyle(tab === 'phone')}>
+              Phone Number
+            </button>
+          </div>
 
-        {/* Search */}
-        <div style={styles.searchBar}>
-          <input
-            style={styles.input}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            placeholder="Enter order or phone number"
-          />
-          <button style={styles.searchBtn} onClick={handleSearch} disabled={loading}>
-            {loading ? '...' : 'Track'}
+          {tab === 'order' ? (
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>Order Number</label>
+              <input type="text" placeholder="e.g. 1234 or #1234" value={orderNumber}
+                onChange={e => setOrderNumber(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleTrack()}
+                style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #e5e7eb', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
+                onFocus={e => (e.target.style.borderColor = '#6366f1')}
+                onBlur={e => (e.target.style.borderColor = '#e5e7eb')} />
+            </div>
+          ) : (
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>Phone Number</label>
+              <input type="tel" placeholder="03001234567" value={phone}
+                onChange={e => setPhone(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleTrack()}
+                style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #e5e7eb', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
+                onFocus={e => (e.target.style.borderColor = '#6366f1')}
+                onBlur={e => (e.target.style.borderColor = '#e5e7eb')} />
+            </div>
+          )}
+
+          {error && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '10px 14px', color: '#dc2626', fontSize: '14px', marginBottom: '16px' }}>{error}</div>}
+
+          <button onClick={handleTrack} disabled={loading}
+            style={{ width: '100%', padding: '13px', borderRadius: '10px', background: loading ? '#a5b4fc' : '#6366f1', color: '#fff', border: 'none', fontSize: '15px', fontWeight: '700', cursor: loading ? 'not-allowed' : 'pointer' }}>
+            {loading ? 'Searching...' : 'Track Order →'}
           </button>
         </div>
 
-        {error && <div style={styles.errorBox}>{error}</div>}
+        {result && (
+          <div>
+            <div style={{ background: '#fff', borderRadius: '16px', padding: '24px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+                <div>
+                  <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '2px' }}>Order</div>
+                  <div style={{ fontSize: '20px', fontWeight: '700', color: '#1a1a2e' }}>#{result.order.orderNumber}</div>
+                  {result.order.customerName && <div style={{ fontSize: '14px', color: '#6b7280', marginTop: '2px' }}>{result.order.customerName}</div>}
+                </div>
+                <div style={{ background: isShipped ? '#ecfdf5' : '#f0f0ff', color: isShipped ? '#10b981' : '#6366f1', padding: '6px 12px', borderRadius: '20px', fontSize: '13px', fontWeight: '700' }}>
+                  {STATUS_CONFIG[result.order.status].label}
+                </div>
+              </div>
 
-        {result && <OrderCard order={result} />}
+              {result.order.lineItems?.length > 0 && (
+                <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: '14px', marginBottom: '14px' }}>
+                  {result.order.lineItems.map((item, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginBottom: '4px' }}>
+                      <span style={{ color: '#374151' }}>{item.name}</span>
+                      <span style={{ color: '#9ca3af', fontWeight: '600' }}>×{item.quantity}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ fontSize: '12px', color: '#9ca3af' }}>Ordered {formatDate(result.order.createdAt)} · Last updated {formatDate(result.order.updatedAt)}</div>
+            </div>
+
+            {!isShipped && (
+              <div style={{ background: '#fff', borderRadius: '16px', padding: '24px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)', marginBottom: '16px' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: '700', color: '#1a1a2e', margin: '0 0 20px' }}>Order Progress</h2>
+                {ALL_STATUSES.filter(s => s !== 'shipped' && s !== 'delivered').map((s, i, arr) => {
+                  const cfg = STATUS_CONFIG[s]
+                  const isDone = cfg.step < currentStep
+                  const isCurrent = s === result.order.status
+                  const isLast = i === arr.length - 1
+                  return (
+                    <div key={s} style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '28px' }}>
+                        <div style={{ width: '28px', height: '28px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: isDone ? '#6366f1' : isCurrent ? '#f0f0ff' : '#f3f4f6', border: isCurrent ? '2px solid #6366f1' : 'none', fontSize: '13px', fontWeight: '700', color: isDone ? '#fff' : isCurrent ? '#6366f1' : '#9ca3af' }}>
+                          {isDone ? '✓' : cfg.step}
+                        </div>
+                        {!isLast && <div style={{ width: '2px', height: '28px', background: isDone ? '#6366f1' : '#e5e7eb', margin: '2px 0' }} />}
+                      </div>
+                      <div style={{ paddingBottom: isLast ? 0 : '20px', paddingTop: '4px' }}>
+                        <div style={{ fontSize: '14px', fontWeight: isCurrent ? '700' : '500', color: isCurrent ? '#1a1a2e' : isDone ? '#6366f1' : '#9ca3af' }}>{cfg.label}</div>
+                        {isCurrent && <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>Current status</div>}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {isShipped && (
+              <div style={{ background: '#fff', borderRadius: '16px', padding: '28px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)', marginBottom: '16px', textAlign: 'center' }}>
+                <div style={{ fontSize: '40px', marginBottom: '12px' }}>🚚</div>
+                <div style={{ fontSize: '17px', fontWeight: '700', color: '#1a1a2e', marginBottom: '6px' }}>Your order is on its way!</div>
+                <div style={{ fontSize: '14px', color: '#6b7280', marginBottom: '20px' }}>
+                  Your parcel has been handed to PostEx.{result.order.trackingId && <><br />Tracking ID: <strong style={{ color: '#374151' }}>{result.order.trackingId}</strong></>}
+                </div>
+                {result.order.postexUrl && (
+                  <a href={result.order.postexUrl} target="_blank" rel="noopener noreferrer"
+                    style={{ display: 'inline-block', padding: '13px 32px', background: '#10b981', color: '#fff', borderRadius: '10px', fontSize: '15px', fontWeight: '700', textDecoration: 'none' }}>
+                    Track on PostEx →
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </main>
-  );
+  )
 }
-
-// ─── Order Card ───────────────────────────────────────────────────────────────
-function OrderCard({ order }: { order: TrackResult }) {
-  const { label, isDelivered, isShipped } = getDisplayStatus(order);
-  const delivery = calcDelivery(order.confirmed_at);
-
-  const delivered = order.status_history?.find(h => h.status === 'delivered');
-  const shipped = order.status_history?.find(h => h.status === 'shipped');
-
-  return (
-    <>
-      <div style={styles.hero}>
-        <div style={styles.orderNum}>Order #{order.order_number}</div>
-        <div style={styles.customerName}>{order.customer_name}</div>
-        <div style={styles.badges}>
-          <span style={styles.badgeStatus}>{label}</span>
-        </div>
-      </div>
-
-      <div style={styles.infoRow}>
-        <div style={styles.infoCard}>
-          <div style={styles.infoLabel}>Order Confirmed</div>
-          <div style={styles.infoValue}>{fmtDate(order.confirmed_at)}</div>
-        </div>
-
-        <div style={styles.infoCard}>
-          <div style={styles.infoLabel}>
-            {isDelivered ? 'Delivered' : 'Est. Delivery'}
-          </div>
-          <div style={styles.infoValue}>
-            {isDelivered
-              ? fmtDate(delivered?.timestamp)
-              : `${delivery.minDate} - ${delivery.maxDate}`}
-          </div>
-        </div>
-      </div>
-
-      {/* ITEMS SAFE */}
-      <div style={styles.itemsCard}>
-        <div style={styles.itemsHeader}>Items</div>
-
-        {(order.items ?? []).map((item, i) => (
-          <div key={i} style={styles.itemRow}>
-            <span>
-              {item.name} {item.variant ? `(${item.variant})` : ''}
-            </span>
-            <span>x{item.quantity}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* STATUS */}
-      <div style={styles.timelineCard}>
-        <b>{label}</b>
-        <div>
-          {isShipped
-            ? fmtDateTime(shipped?.timestamp)
-            : isDelivered
-            ? fmtDateTime(delivered?.timestamp)
-            : 'In progress'}
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─── STYLES (UNCHANGED) ───────────────────────────────────────────────────────
-const styles: Record<string, React.CSSProperties> = {
-  main: { background: '#f4f4f4', minHeight: '100vh', padding: 20 },
-  tracker: { maxWidth: 540, margin: '0 auto' },
-
-  appHeader: { display: 'flex', gap: 10, marginBottom: 20 },
-  logo: { background: '#E50914', color: '#fff', padding: '6px 12px', borderRadius: 8 },
-  appSub: { fontSize: 12, color: '#777' },
-
-  tabs: { display: 'flex', gap: 6, marginBottom: 10 },
-  tab: { flex: 1, padding: 10, background: '#ddd', border: 'none', borderRadius: 8 },
-  tabActive: { background: '#E50914', color: '#fff' },
-
-  searchBar: { display: 'flex', gap: 10, marginBottom: 15 },
-  input: { flex: 1, padding: 10 },
-  searchBtn: { padding: '10px 16px', background: '#E50914', color: '#fff', border: 'none' },
-
-  errorBox: { color: 'red', marginBottom: 10 },
-
-  hero: { background: '#E50914', color: '#fff', padding: 20, borderRadius: 12 },
-  orderNum: { fontSize: 12 },
-  customerName: { fontSize: 22, fontWeight: 700 },
-
-  badges: { marginTop: 10 },
-  badgeStatus: { background: '#fff3', padding: '4px 10px', borderRadius: 20 },
-
-  infoRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 },
-  infoCard: { background: '#fff', padding: 15, borderRadius: 10 },
-  infoLabel: { fontSize: 11, color: '#777' },
-  infoValue: { fontWeight: 600 },
-
-  itemsCard: { background: '#fff', marginTop: 10, padding: 15, borderRadius: 10 },
-  itemsHeader: { fontWeight: 700, marginBottom: 10 },
-  itemRow: { display: 'flex', justifyContent: 'space-between', padding: '6px 0' },
-
-  timelineCard: { background: '#fff', marginTop: 10, padding: 15, borderRadius: 10 },
-};
