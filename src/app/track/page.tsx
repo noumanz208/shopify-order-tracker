@@ -30,6 +30,7 @@ function formatDate(iso: string) {
 }
 
 export default function TrackPage() {
+  const [tab, setTab] = useState<'order' | 'phone'>('order')
   const [orderNumber, setOrderNumber] = useState('')
   const [phone, setPhone] = useState('')
   const [loading, setLoading] = useState(false)
@@ -37,15 +38,19 @@ export default function TrackPage() {
   const [result, setResult] = useState<TrackingResult | null>(null)
 
   async function handleTrack() {
-    if (!orderNumber.trim()) { setError('Please enter your order number.'); return }
-    if (!phone.trim()) { setError('Please enter your phone number.'); return }
+    if (tab === 'order' && !orderNumber.trim()) { setError('Please enter your order number.'); return }
+    if (tab === 'phone' && !phone.trim()) { setError('Please enter your phone number.'); return }
     setLoading(true); setError(''); setResult(null)
 
     try {
       const res = await fetch('/api/track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderNumber, phone }),
+        body: JSON.stringify(
+          tab === 'order'
+            ? { orderNumber }
+            : { phone }
+        ),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error || 'Something went wrong.'); return }
@@ -60,36 +65,57 @@ export default function TrackPage() {
   const currentStep = result ? STATUS_CONFIG[result.order.status].step : 0
   const isShipped = result?.order.status === 'shipped' || result?.order.status === 'delivered'
 
+  const tabStyle = (active: boolean) => ({
+    flex: 1, padding: '10px', borderRadius: '10px', border: 'none',
+    background: active ? '#6366f1' : '#f3f4f6',
+    color: active ? '#fff' : '#6b7280',
+    fontWeight: '600' as const, fontSize: '14px', cursor: 'pointer',
+  })
+
   return (
     <main style={{ minHeight: '100vh', background: '#f8f7f4', fontFamily: "'DM Sans', 'Helvetica Neue', sans-serif" }}>
-      <div style={{ background: '#1a1a2e', padding: '20px 24px', display: 'flex', alignItems: 'center' }}>
+      <div style={{ background: '#1a1a2e', padding: '20px 24px' }}>
         <div style={{ color: '#fff', fontSize: '18px', fontWeight: '700' }}>📦 Order Tracker</div>
       </div>
 
       <div style={{ maxWidth: '640px', margin: '0 auto', padding: '32px 20px' }}>
         <div style={{ background: '#fff', borderRadius: '16px', padding: '28px', boxShadow: '0 2px 12px rgba(0,0,0,0.08)', marginBottom: '24px' }}>
           <h1 style={{ fontSize: '22px', fontWeight: '700', color: '#1a1a2e', margin: '0 0 6px' }}>Track Your Order</h1>
-          <p style={{ fontSize: '14px', color: '#6b7280', margin: '0 0 24px' }}>Enter your order number and phone number.</p>
+          <p style={{ fontSize: '14px', color: '#6b7280', margin: '0 0 24px' }}>
+            Track using your order number or phone number.
+          </p>
 
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>Order Number</label>
-            <input type="text" placeholder="e.g. 1234 or #1234" value={orderNumber}
-              onChange={e => setOrderNumber(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleTrack()}
-              style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #e5e7eb', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
-              onFocus={e => (e.target.style.borderColor = '#6366f1')}
-              onBlur={e => (e.target.style.borderColor = '#e5e7eb')} />
+          {/* Tabs */}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
+            <button onClick={() => { setTab('order'); setError(''); setResult(null) }} style={tabStyle(tab === 'order')}>
+              Order Number
+            </button>
+            <button onClick={() => { setTab('phone'); setError(''); setResult(null) }} style={tabStyle(tab === 'phone')}>
+              Phone Number
+            </button>
           </div>
 
-          <div style={{ marginBottom: '20px' }}>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>Phone Number</label>
-            <input type="tel" placeholder="03001234567" value={phone}
-              onChange={e => setPhone(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleTrack()}
-              style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #e5e7eb', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
-              onFocus={e => (e.target.style.borderColor = '#6366f1')}
-              onBlur={e => (e.target.style.borderColor = '#e5e7eb')} />
-          </div>
+          {tab === 'order' ? (
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>Order Number</label>
+              <input type="text" placeholder="e.g. 1234 or #1234" value={orderNumber}
+                onChange={e => setOrderNumber(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleTrack()}
+                style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #e5e7eb', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
+                onFocus={e => (e.target.style.borderColor = '#6366f1')}
+                onBlur={e => (e.target.style.borderColor = '#e5e7eb')} />
+            </div>
+          ) : (
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>Phone Number</label>
+              <input type="tel" placeholder="03001234567" value={phone}
+                onChange={e => setPhone(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleTrack()}
+                style={{ width: '100%', padding: '11px 14px', borderRadius: '10px', border: '1.5px solid #e5e7eb', fontSize: '15px', outline: 'none', boxSizing: 'border-box' }}
+                onFocus={e => (e.target.style.borderColor = '#6366f1')}
+                onBlur={e => (e.target.style.borderColor = '#e5e7eb')} />
+            </div>
+          )}
 
           {error && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '10px 14px', color: '#dc2626', fontSize: '14px', marginBottom: '16px' }}>{error}</div>}
 
