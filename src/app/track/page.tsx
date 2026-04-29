@@ -28,15 +28,11 @@ interface TrackResult {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
-function calcDelivery(confirmedAt: string) {
-  if (!confirmedAt) {
-    return { minDate: '-', maxDate: '-', daysLeft: 0, progress: 0 };
-  }
+function calcDelivery(confirmedAt?: string) {
+  if (!confirmedAt) return { minDate: '-', maxDate: '-', daysLeft: 0, progress: 0 };
 
   const start = new Date(confirmedAt);
-  if (isNaN(start.getTime())) {
-    return { minDate: '-', maxDate: '-', daysLeft: 0, progress: 0 };
-  }
+  if (isNaN(start.getTime())) return { minDate: '-', maxDate: '-', daysLeft: 0, progress: 0 };
 
   start.setHours(0, 0, 0, 0);
 
@@ -54,18 +50,9 @@ function calcDelivery(confirmedAt: string) {
   const progress = Math.min(100, Math.round((daysPassed / 9) * 100));
 
   const fmt = (d: Date) =>
-    d.toLocaleDateString('en-PK', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    });
+    d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' });
 
-  return {
-    minDate: fmt(minDay),
-    maxDate: fmt(maxDay),
-    daysLeft,
-    progress,
-  };
+  return { minDate: fmt(minDay), maxDate: fmt(maxDay), daysLeft, progress };
 }
 
 function fmtDate(iso?: string) {
@@ -73,11 +60,7 @@ function fmtDate(iso?: string) {
   const d = new Date(iso);
   return isNaN(d.getTime())
     ? '-'
-    : d.toLocaleDateString('en-PK', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-      });
+    : d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function fmtDateTime(iso?: string) {
@@ -132,15 +115,20 @@ export default function TrackPage() {
 
       const data = await res.json();
 
-      if (!res.ok || !data?.order_number) {
-        setError(data?.error ?? 'Order not found.');
+      console.log('API RESPONSE:', data); // DEBUG IMPORTANT
+
+      // ─── FIX: flexible API parsing ───
+      const order = data?.order ?? data?.data ?? data;
+
+      if (!res.ok || !order?.order_number) {
+        setError(data?.error || 'Order does not exist');
         return;
       }
 
       setResult({
-        ...data,
-        items: data?.items ?? [],
-        status_history: data?.status_history ?? [],
+        ...order,
+        items: order?.items ?? [],
+        status_history: order?.status_history ?? [],
       });
     } catch {
       setError('Something went wrong. Please try again.');
@@ -152,9 +140,10 @@ export default function TrackPage() {
   return (
     <main style={styles.main}>
       <div style={styles.tracker}>
+
         {/* Header */}
         <div style={styles.appHeader}>
-          <span style={styles.logo}>KOVRR</span>
+          <span style={styles.logo}>KOVR</span>
           <span style={styles.appSub}>Order Tracker</span>
         </div>
 
@@ -200,7 +189,7 @@ export default function TrackPage() {
 
 // ─── Order Card ───────────────────────────────────────────────────────────────
 function OrderCard({ order }: { order: TrackResult }) {
-  const { label, isDelivered, isShipped, isMaking } = getDisplayStatus(order);
+  const { label, isDelivered, isShipped } = getDisplayStatus(order);
   const delivery = calcDelivery(order.confirmed_at);
 
   const delivered = order.status_history?.find(h => h.status === 'delivered');
@@ -222,49 +211,48 @@ function OrderCard({ order }: { order: TrackResult }) {
           <div style={styles.infoValue}>{fmtDate(order.confirmed_at)}</div>
         </div>
 
-        {!isDelivered ? (
-          <div style={styles.infoCard}>
-            <div style={styles.infoLabel}>Est. Delivery</div>
-            <div style={styles.infoValue}>{delivery.minDate} - {delivery.maxDate}</div>
+        <div style={styles.infoCard}>
+          <div style={styles.infoLabel}>
+            {isDelivered ? 'Delivered' : 'Est. Delivery'}
           </div>
-        ) : (
-          <div style={styles.infoCard}>
-            <div style={styles.infoLabel}>Delivered</div>
-            <div style={styles.infoValue}>{fmtDate(delivered?.timestamp)}</div>
+          <div style={styles.infoValue}>
+            {isDelivered
+              ? fmtDate(delivered?.timestamp)
+              : `${delivery.minDate} - ${delivery.maxDate}`}
           </div>
-        )}
+        </div>
       </div>
 
-      {/* ITEMS (FIXED) */}
+      {/* ITEMS SAFE */}
       <div style={styles.itemsCard}>
         <div style={styles.itemsHeader}>Items</div>
 
         {(order.items ?? []).map((item, i) => (
           <div key={i} style={styles.itemRow}>
-            <span>{item.name} {item.variant ? `(${item.variant})` : ''}</span>
+            <span>
+              {item.name} {item.variant ? `(${item.variant})` : ''}
+            </span>
             <span>x{item.quantity}</span>
           </div>
         ))}
       </div>
 
-      {/* TIMELINE */}
+      {/* STATUS */}
       <div style={styles.timelineCard}>
+        <b>{label}</b>
         <div>
-          <b>{label}</b>
-          <div>
-            {isShipped
-              ? fmtDateTime(shipped?.timestamp)
-              : isDelivered
-              ? fmtDateTime(delivered?.timestamp)
-              : 'In progress'}
-          </div>
+          {isShipped
+            ? fmtDateTime(shipped?.timestamp)
+            : isDelivered
+            ? fmtDateTime(delivered?.timestamp)
+            : 'In progress'}
         </div>
       </div>
     </>
   );
 }
 
-// ─── Styles (UNCHANGED) ───────────────────────────────────────────────────────
+// ─── STYLES (UNCHANGED) ───────────────────────────────────────────────────────
 const styles: Record<string, React.CSSProperties> = {
   main: { background: '#f4f4f4', minHeight: '100vh', padding: 20 },
   tracker: { maxWidth: 540, margin: '0 auto' },
