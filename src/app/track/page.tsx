@@ -464,7 +464,7 @@ export default function TrackPage() {
         <div className="inner">
           {/* Header */}
           <div className="header">
-            <div className="logo">KOVR</div>
+            <div className="logo">Kovrrr</div>
             <span className="app-sub">Order Tracker</span>
           </div>
 
