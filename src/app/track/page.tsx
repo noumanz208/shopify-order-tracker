@@ -161,8 +161,9 @@ function buildTimeline(order: TrackingResult['order'], history: TrackingResult['
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow-y:auto}
 :root{--red:#C41230;--card:#1a1a1a;--border:#2a2a2a;--bg:#f5f5f5;--text:#f0f0f0;--muted:#888}
-.wrap{background:var(--bg);min-height:100vh;padding:24px 0 48px;font-family:'DM Sans',sans-serif}
+.wrap{background:var(--bg);min-height:100vh;padding:24px 0 48px;font-family:'DM Sans',sans-serif;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .inner{max-width:480px;margin:0 auto;padding:0 20px}
 .header{display:flex;align-items:center;gap:10px;margin-bottom:24px}
 .logo{background:var(--red);color:#fff;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;letter-spacing:2px;padding:5px 11px;border-radius:6px}
