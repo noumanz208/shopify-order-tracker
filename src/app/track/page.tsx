@@ -1,19 +1,19 @@
 'use client'
- 
+
 import { useState } from 'react'
- 
+
 // ─── Status config ────────────────────────────────────────────────────────────
 // in_process = order confirmed, making/printing in progress
 // shipped     = trackingId is set, parcel handed to PostEx
 // delivered   = delivered
 type OrderStatus = 'in_process' | 'shipped' | 'delivered'
- 
+
 const STATUS_LABEL: Record<OrderStatus, string> = {
   in_process: 'Making in Progress',
   shipped:    'Shipped',
   delivered:  'Delivered',
 }
- 
+
 // ─── API shape ────────────────────────────────────────────────────────────────
 interface TrackingResult {
   order: {
@@ -29,19 +29,19 @@ interface TrackingResult {
   }
   history: { status: OrderStatus; note: string | null; changed_at: string }[]
 }
- 
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function daysBetween(a: string, b: string) {
   const d1 = new Date(a); d1.setHours(0, 0, 0, 0)
   const d2 = new Date(b); d2.setHours(0, 0, 0, 0)
   return Math.floor((d2.getTime() - d1.getTime()) / 86400000)
 }
- 
+
 function todayStr() {
   const t = new Date(); t.setHours(0, 0, 0, 0)
   return t.toISOString().slice(0, 10)
 }
- 
+
 function fmtShort(d: Date) {
   return d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short' })
 }
@@ -57,13 +57,13 @@ function fmtDateTime(iso: string) {
     hour: '2-digit', minute: '2-digit',
   })
 }
- 
+
 // ─── Countdown logic (identical to v8, just uses new field names) ─────────────
 // in_process: 10-day window from confirmedAt (createdAt)
 // shipped:     3-day window from shippedAt — never goes negative
 function calcCountdown(order: TrackingResult['order']) {
   const today = todayStr()
- 
+
   if (order.status === 'in_process') {
     const confirmed = new Date(order.createdAt); confirmed.setHours(0, 0, 0, 0)
     const maxD = new Date(confirmed); maxD.setDate(confirmed.getDate() + 10)
@@ -80,7 +80,7 @@ function calcCountdown(order: TrackingResult['order']) {
       shippedMode: false,
     }
   }
- 
+
   if (order.status === 'shipped' && order.shippedAt) {
     const shipped = new Date(order.shippedAt); shipped.setHours(0, 0, 0, 0)
     const deadlineD = new Date(shipped); deadlineD.setDate(shipped.getDate() + 3)
@@ -96,10 +96,10 @@ function calcCountdown(order: TrackingResult['order']) {
       shippedMode: true,
     }
   }
- 
+
   return null
 }
- 
+
 // ─── PostEx live fetch ────────────────────────────────────────────────────────
 async function fetchPostEx(trackingId: string): Promise<{ ok: boolean; data?: any }> {
   try {
@@ -122,19 +122,19 @@ async function fetchPostEx(trackingId: string): Promise<{ ok: boolean; data?: an
     return { ok: false }
   }
 }
- 
+
 // ─── Status timeline builder ──────────────────────────────────────────────────
 // Uses the history array from the API so timestamps are real
 function buildTimeline(order: TrackingResult['order'], history: TrackingResult['history']) {
   const isDelivered = order.status === 'delivered'
   const isShipped   = order.status === 'shipped'
- 
+
   // Helper: find changed_at for a status from history
   const historyTime = (s: string) => {
     const entry = history.find(h => h.status === s)
     return entry ? fmtDateTime(entry.changed_at) : 'Completed'
   }
- 
+
   if (isDelivered) {
     return [
       { dot: 'green', label: 'Delivered',            sub: historyTime('delivered'),                         tag: null },
@@ -156,7 +156,7 @@ function buildTimeline(order: TrackingResult['order'], history: TrackingResult['
     { dot: 'green', label: 'Order Confirmed',          sub: fmtDate(order.createdAt),                        tag: null },
   ]
 }
- 
+
 // ─── Styles (kept identical to v8) ───────────────────────────────────────────
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&display=swap');
@@ -250,7 +250,7 @@ const css = `
 .empty span{display:block;font-size:12px;color:#555;margin-top:6px}
 .error-box{background:#1a0505;border:1px solid #C4123040;border-radius:10px;padding:12px 16px;color:#f87171;font-size:13px;margin-bottom:16px}
 `
- 
+
 // ─── PostEx events renderer ───────────────────────────────────────────────────
 function PostExEvents({ events }: { events: any[] | null }) {
   const icons = ['🚚', '📦', '✅']
@@ -280,7 +280,7 @@ function PostExEvents({ events }: { events: any[] | null }) {
     </>
   )
 }
- 
+
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function TrackPage() {
   const [tab, setTab] = useState<'order' | 'phone'>('order')
@@ -290,11 +290,11 @@ export default function TrackPage() {
   const [result, setResult] = useState<TrackingResult | null>(null)
   // PostEx events: null = loading, [] = not found, array = events
   const [postexEvents, setPostexEvents] = useState<any[] | null | undefined>(undefined)
- 
+
   async function handleTrack() {
     if (!query.trim()) { setError('Please enter your ' + (tab === 'order' ? 'order number.' : 'phone number.')); return }
     setLoading(true); setError(''); setResult(null); setPostexEvents(undefined)
- 
+
     try {
       const res = await fetch('/api/track', {
         method: 'POST',
@@ -304,7 +304,7 @@ export default function TrackPage() {
       const data = await res.json()
       if (!res.ok) { setError(data.error || 'Order not found.'); return }
       setResult(data)
- 
+
       // Fetch PostEx live tracking if shipped or delivered
       if ((data.order.status === 'shipped' || data.order.status === 'delivered') && data.order.trackingId) {
         setPostexEvents(null) // null = loading spinner
@@ -317,11 +317,11 @@ export default function TrackPage() {
       setLoading(false)
     }
   }
- 
+
   function switchTab(t: 'order' | 'phone') {
     setTab(t); setQuery(''); setError(''); setResult(null); setPostexEvents(undefined)
   }
- 
+
   // ── Render result ────────────────────────────────────────────────────────────
   function renderResult() {
     if (!result) return null
@@ -329,17 +329,17 @@ export default function TrackPage() {
     const isDelivered = o.status === 'delivered'
     const isShipped   = o.status === 'shipped'
     const isInProcess = o.status === 'in_process'
- 
+
     const label = STATUS_LABEL[o.status] ?? o.status
     const cd = calcCountdown(o)
- 
+
     const heroBadgeClass = isDelivered ? 'badge badge-delivered' : isShipped ? 'badge badge-shipped' : 'badge badge-white'
- 
+
     // Info grid: Confirmed + Est. Delivery / Delivered on
     const estCard = isDelivered
       ? <div className="info-card"><div className="info-label">Delivered on</div><div className="info-value" style={{ color: '#22c55e' }}>{fmtDate(o.updatedAt)}</div></div>
       : <div className="info-card"><div className="info-label">Est. Delivery</div><div className="info-value sm">{cd ? cd.estRange || `By ${cd.maxDate}` : '—'}</div></div>
- 
+
     // Note card for in_process
     const noteBlock = isInProcess && (
       <div className="note-card">
@@ -350,7 +350,7 @@ export default function TrackPage() {
         </div>
       </div>
     )
- 
+
     // Countdown / Delivery window
     const countdownBlock = cd && !isDelivered && (
       <div className="countdown-card">
@@ -369,7 +369,7 @@ export default function TrackPage() {
         </div>
       </div>
     )
- 
+
     // PostEx block (shown when shipped or delivered and trackingId exists)
     const postexBlock = (isShipped || isDelivered) && o.trackingId && (
       <div className="postex-wrap">
@@ -388,7 +388,7 @@ export default function TrackPage() {
         </a>
       </div>
     )
- 
+
     // Status history timeline
     const timeline = buildTimeline(o, result.history)
     const tlItems = timeline.map((item, i) => (
@@ -405,7 +405,7 @@ export default function TrackPage() {
         </div>
       </div>
     ))
- 
+
     // Items
     const itemsHTML = (o.lineItems || []).map((item, i) => (
       <div key={i} className="item-row">
@@ -413,7 +413,7 @@ export default function TrackPage() {
         <span className="item-qty">x{item.quantity}</span>
       </div>
     ))
- 
+
     return (
       <>
         {/* Hero */}
@@ -425,7 +425,7 @@ export default function TrackPage() {
             <span className="badge badge-date">{fmtDate(o.createdAt)}</span>
           </div>
         </div>
- 
+
         {/* Info grid */}
         <div className="info-grid">
           <div className="info-card">
@@ -434,15 +434,15 @@ export default function TrackPage() {
           </div>
           {estCard}
         </div>
- 
+
         {noteBlock}
         {countdownBlock}
         {postexBlock}
- 
+
         {/* Timeline */}
         <div className="section-label">Status History</div>
         <div className="tl-card">{tlItems}</div>
- 
+
         {/* Items */}
         {itemsHTML.length > 0 && (
           <>
@@ -456,7 +456,7 @@ export default function TrackPage() {
       </>
     )
   }
- 
+
   return (
     <>
       <style>{css}</style>
@@ -467,13 +467,13 @@ export default function TrackPage() {
             <div className="logo">KOVRR</div>
             <span className="app-sub">Order Tracker</span>
           </div>
- 
+
           {/* Tabs */}
           <div className="tabs">
             <button className={`tab${tab === 'order' ? ' active' : ''}`} onClick={() => switchTab('order')}>Order Number</button>
             <button className={`tab${tab === 'phone' ? ' active' : ''}`} onClick={() => switchTab('phone')}>Phone Number</button>
           </div>
- 
+
           {/* Search */}
           <div className="search-row">
             <input
@@ -487,10 +487,10 @@ export default function TrackPage() {
               {loading ? 'Searching…' : 'Track →'}
             </button>
           </div>
- 
+
           {/* Error */}
           {error && <div className="error-box">{error}</div>}
- 
+
           {/* Result */}
           <div id="result">{renderResult()}</div>
         </div>
