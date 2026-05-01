@@ -2,19 +2,14 @@
 
 import { useState } from 'react'
 
-// ─── Status config ────────────────────────────────────────────────────────────
-// in_process = order confirmed, making/printing in progress
-// shipped     = trackingId is set, parcel handed to PostEx
-// delivered   = delivered
 type OrderStatus = 'in_process' | 'shipped' | 'delivered'
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   in_process: 'Making in Progress',
-  shipped:    'Shipped',
-  delivered:  'Delivered',
+  shipped: 'Shipped',
+  delivered: 'Delivered',
 }
 
-// ─── API shape ────────────────────────────────────────────────────────────────
 interface TrackingResult {
   order: {
     orderNumber: string
@@ -23,18 +18,23 @@ interface TrackingResult {
     trackingId: string | null
     postexUrl: string | null
     lineItems: { name: string; quantity: number }[]
-    createdAt: string   // order confirmed / placed date
+    createdAt: string
     updatedAt: string
-    shippedAt: string | null  // when status became 'shipped' — for countdown
+    shippedAt: string | null
   }
   history: { status: OrderStatus; note: string | null; changed_at: string }[]
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function daysBetween(a: string, b: string) {
-  const d1 = new Date(a); d1.setHours(0, 0, 0, 0)
-  const d2 = new Date(b); d2.setHours(0, 0, 0, 0)
-  return Math.floor((d2.getTime() - d1.getTime()) / 86400000)
+function workingDaysBetween(a: string, b: string) {
+  const start = new Date(a); start.setHours(0, 0, 0, 0)
+  const end = new Date(b); end.setHours(0, 0, 0, 0)
+  let count = 0
+  const cur = new Date(start)
+  while (cur < end) {
+    cur.setDate(cur.getDate() + 1)
+    if (cur.getDay() !== 0) count++
+  }
+  return count
 }
 
 function todayStr() {
@@ -57,26 +57,29 @@ function fmtDateTime(iso: string) {
     hour: '2-digit', minute: '2-digit',
   })
 }
+function fmtCCDate(iso: string) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleString('en-PK', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
 
-// ─── Countdown logic (identical to v8, just uses new field names) ─────────────
-// in_process: 10-day window from confirmedAt (createdAt)
-// shipped:     3-day window from shippedAt — never goes negative
 function calcCountdown(order: TrackingResult['order']) {
   const today = todayStr()
 
-  if (order.status === 'in_process') {
+  if (order.status !== 'shipped' && order.status !== 'delivered') {
     const confirmed = new Date(order.createdAt); confirmed.setHours(0, 0, 0, 0)
-    const maxD = new Date(confirmed); maxD.setDate(confirmed.getDate() + 10)
-    const minD = new Date(confirmed); minD.setDate(confirmed.getDate() + 7)
-    const passed = daysBetween(order.createdAt, today)
-    const daysLeft = Math.max(1, 10 - passed)           // never goes below 1
-    const prog = Math.min(95, Math.round((passed / 10) * 100))
+    const minD = new Date(confirmed); minD.setDate(confirmed.getDate() + 10)
+    const maxD = new Date(confirmed); maxD.setDate(confirmed.getDate() + 15)
+    const passed = workingDaysBetween(order.createdAt, today)
+    const daysLeft = Math.max(1, 15 - passed)
+    const prog = Math.min(95, Math.round((passed / 15) * 100))
     return {
-      daysLeft,
-      prog,
+      daysLeft, prog,
       startFmt: fmtFull(confirmed),
       maxDate: fmtFull(maxD),
-      estRange: `${fmtShort(minD)} – ${fmtFull(maxD)}`,
+      estRange: `${fmtShort(minD)} – ${fmtShort(maxD)}`,
       shippedMode: false,
     }
   }
@@ -84,12 +87,11 @@ function calcCountdown(order: TrackingResult['order']) {
   if (order.status === 'shipped' && order.shippedAt) {
     const shipped = new Date(order.shippedAt); shipped.setHours(0, 0, 0, 0)
     const deadlineD = new Date(shipped); deadlineD.setDate(shipped.getDate() + 3)
-    const passed = daysBetween(order.shippedAt, today)
-    const daysLeft = Math.max(1, 3 - passed)            // never goes negative
+    const passed = workingDaysBetween(order.shippedAt, today)
+    const daysLeft = Math.max(1, 3 - passed)
     const prog = Math.min(95, Math.round((passed / 3) * 100))
     return {
-      daysLeft,
-      prog,
+      daysLeft, prog,
       startFmt: fmtFull(shipped),
       maxDate: fmtFull(deadlineD),
       estRange: '',
@@ -100,202 +102,229 @@ function calcCountdown(order: TrackingResult['order']) {
   return null
 }
 
-// ─── PostEx live fetch ────────────────────────────────────────────────────────
-async function fetchPostEx(trackingId: string): Promise<{ ok: boolean; data?: any }> {
+// CallCourier public API — no token needed
+async function fetchCallCourier(trackingId: string): Promise<{ ok: boolean; data?: any }> {
   try {
-    const res = await fetch(`https://api.postex.pk/services/integration/api/order/v3/track-order?trackingNumber=${trackingId}`, {
-      headers: { 'token': process.env.NEXT_PUBLIC_POSTEX_TOKEN || '' },
-    })
+    const res = await fetch(
+      `http://cod.callcourier.com.pk/api/CallCourier/GetTackingHistory?cn=${trackingId}`
+    )
     if (!res.ok) return { ok: false }
     const json = await res.json()
-    // PostEx returns statusCode 200 and an array of tracking events
-    if (json?.statusCode === 200 && json?.dist?.length) {
-      const events = json.dist.map((ev: any, i: number) => ({
-        label: ev.orderStatus || ev.status,
-        time: ev.dateTime || ev.date || '',
-        state: i === 0 ? 'active' : 'done',
-      }))
-      return { ok: true, data: { events } }
-    }
-    return { ok: false }
+    if (!Array.isArray(json) || json.length === 0) return { ok: false }
+
+    // Sort newest first
+    const sorted = [...json].sort(
+      (a, b) => new Date(b.TransactionDate).getTime() - new Date(a.TransactionDate).getTime()
+    )
+
+    const events = sorted.map((ev: any, i: number) => ({
+      label: ev.ProcessDescForPortal || ev.OperationDesc || 'Update',
+      time: fmtCCDate(ev.TransactionDate),
+      state: i === 0 ? 'active' : 'done',
+    }))
+
+    return { ok: true, data: { events } }
   } catch {
     return { ok: false }
   }
 }
 
-// ─── Status timeline builder ──────────────────────────────────────────────────
-// Uses the history array from the API so timestamps are real
 function buildTimeline(order: TrackingResult['order'], history: TrackingResult['history']) {
   const isDelivered = order.status === 'delivered'
-  const isShipped   = order.status === 'shipped'
-
-  // Helper: find changed_at for a status from history
+  const isShipped = order.status === 'shipped'
   const historyTime = (s: string) => {
     const entry = history.find(h => h.status === s)
     return entry ? fmtDateTime(entry.changed_at) : 'Completed'
   }
-
   if (isDelivered) {
     return [
-      { dot: 'green', label: 'Delivered',            sub: historyTime('delivered'),                         tag: null },
-      { dot: 'green', label: 'Shipped',               sub: `Tracking ID: ${order.trackingId}`,              tag: null },
-      { dot: 'green', label: 'Making in Progress',    sub: 'Completed',                                     tag: null },
-      { dot: 'green', label: 'Order Confirmed',       sub: fmtDate(order.createdAt),                        tag: null },
+      { dot: 'green', label: 'Delivered', sub: historyTime('delivered'), tag: null },
+      { dot: 'green', label: 'Shipped', sub: `Tracking ID: ${order.trackingId}`, tag: null },
+      { dot: 'green', label: 'Making in Progress', sub: 'Completed', tag: null },
+      { dot: 'green', label: 'Order Confirmed', sub: fmtDate(order.createdAt), tag: null },
     ]
   }
   if (isShipped) {
     return [
-      { dot: 'amber', label: 'Shipped',               sub: `Tracking ID: ${order.trackingId}`,              tag: 'current' },
-      { dot: 'green', label: 'Making in Progress',    sub: 'Completed',                                     tag: null },
-      { dot: 'green', label: 'Order Confirmed',       sub: fmtDate(order.createdAt),                        tag: null },
+      { dot: 'amber', label: 'Shipped', sub: `Tracking ID: ${order.trackingId}`, tag: 'current' },
+      { dot: 'green', label: 'Making in Progress', sub: 'Completed', tag: null },
+      { dot: 'green', label: 'Order Confirmed', sub: fmtDate(order.createdAt), tag: null },
     ]
   }
-  // in_process
   return [
-    { dot: 'red',   label: 'Making in Progress',      sub: 'In progress',                                   tag: 'current' },
-    { dot: 'green', label: 'Order Confirmed',          sub: fmtDate(order.createdAt),                        tag: null },
+    { dot: 'blue', label: 'Making in Progress', sub: 'In progress', tag: 'current' },
+    { dot: 'green', label: 'Order Confirmed', sub: fmtDate(order.createdAt), tag: null },
   ]
 }
 
-// ─── Styles (kept identical to v8) ───────────────────────────────────────────
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow-y:auto}
-:root{--red:#C41230;--card:#1a1a1a;--border:#2a2a2a;--bg:#f5f5f5;--text:#f0f0f0;--muted:#888}
-.wrap{background:var(--bg);min-height:100vh;padding:24px 0 48px;font-family:'Plus Jakarta Sans',sans-serif;overflow-y:auto;-webkit-overflow-scrolling:touch}
-.inner{max-width:480px;margin:0 auto;padding:0 20px}
-.header{display:flex;align-items:center;gap:10px;margin-bottom:24px}
-.logo{background:var(--red);color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:12px;letter-spacing:2px;padding:5px 11px;border-radius:6px}
-.app-sub{font-size:11px;color:#999;letter-spacing:1.5px;text-transform:uppercase;font-weight:500}
-.tabs{display:flex;gap:6px;margin-bottom:10px}
-.tab{flex:1;padding:9px;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px;color:#999;background:#e8e8e8;border:1px solid #ddd;font-family:'Plus Jakarta Sans',sans-serif;transition:all .2s}
-.tab.active{background:#111;color:#fff;border-color:#111}
-.search-row{display:flex;gap:8px;margin-bottom:20px}
-.search-row input{flex:1;background:#fff;border:1.5px solid #ddd;border-radius:8px;padding:10px 14px;color:#111;font-family:'Plus Jakarta Sans',sans-serif;font-size:14px;outline:none;transition:border .2s}
-.search-row input::placeholder{color:#bbb}
-.search-row input:focus{border-color:#aaa}
-.search-btn{background:#111;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-size:13px;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;font-weight:700;transition:background .2s;white-space:nowrap}
-.search-btn:hover{background:#333}
-.search-btn:disabled{background:#555;cursor:not-allowed}
-.hero{background:#111;border:1px solid #222;border-radius:14px;padding:24px;margin-bottom:8px}
-.hero-order{font-size:11px;color:#888;letter-spacing:2px;text-transform:uppercase;font-family:'Plus Jakarta Sans',sans-serif;font-weight:600;margin-bottom:6px}
-.hero-name{font-family:'Plus Jakarta Sans',sans-serif;font-size:26px;font-weight:800;color:#fff;margin-bottom:14px}
-.badges{display:flex;gap:8px;flex-wrap:wrap}
-.badge{font-size:12px;font-weight:600;padding:5px 12px;border-radius:20px}
-.badge-white{background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.2)}
-.badge-date{background:rgba(255,255,255,.05);color:#888;border:1px solid rgba(255,255,255,.1)}
-.badge-delivered{background:#052e16;color:#4ade80;border:1px solid #16a34a55}
-.badge-shipped{background:#1a0f00;color:#f59e0b;border:1px solid #f59e0b44}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
-.info-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:15px}
-.info-label{font-size:11px;color:var(--muted);letter-spacing:.5px;margin-bottom:5px;font-weight:500}
-.info-value{font-size:15px;font-weight:700;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif}
-.info-value.sm{color:var(--muted);font-size:12px;font-weight:500;font-family:'DM Sans',sans-serif}
-.note-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start}
-.note-dot{width:8px;height:8px;background:var(--red);border-radius:50%;flex-shrink:0;margin-top:5px}
-.note-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px;font-family:'Plus Jakarta Sans',sans-serif}
-.note-text{font-size:12px;color:var(--muted);line-height:1.6}
-.countdown-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:8px}
-.cd-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-.cd-label{font-size:11px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;font-weight:600}
-.cd-badge{font-size:13px;font-weight:700;color:#fff;background:#333;padding:4px 12px;border-radius:6px}
-.cd-badge.amber{background:#1a0f00;color:#f59e0b;border:1px solid #f59e0b40}
-.pbar{height:4px;background:#2a2a2a;border-radius:2px;margin-bottom:12px;overflow:hidden}
-.pfill{height:100%;background:#fff;border-radius:2px}
+:root{
+  --blue:#0A85D1;--blue-dk:#0872b3;--blue-lt:#e8f4fd;--blue-mid:#b3d9f5;
+  --green:#16a34a;--green-lt:#dcfce7;
+  --amber:#d97706;--amber-lt:#fef3c7;
+  --red:#dc2626;--red-lt:#fee2e2;
+  --text:#0f172a;--text2:#475569;--text3:#94a3b8;
+  --border:#e2e8f0;--surface:#f8fafc;--white:#ffffff;
+  --font:'Plus Jakarta Sans',sans-serif;
+}
+.page{background:#eef5ff;min-height:100vh;font-family:var(--font);padding-bottom:80px;-webkit-overflow-scrolling:touch}
+
+/* topbar */
+.topbar{background:var(--white);border-bottom:1px solid var(--border);padding:0 20px;height:54px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.logo{background:var(--blue);color:#fff;font-weight:800;font-size:11px;letter-spacing:2px;padding:5px 10px;border-radius:6px}
+.topbar-sub{font-size:12px;color:var(--text3);font-weight:600;letter-spacing:1px;text-transform:uppercase}
+
+/* layout */
+.container{max-width:580px;margin:0 auto;padding:28px 16px 0}
+
+/* search card */
+.search-card{background:var(--white);border:1px solid var(--border);border-radius:20px;padding:24px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.search-title{font-size:20px;font-weight:800;color:var(--text);margin-bottom:3px}
+.search-sub{font-size:13px;color:var(--text3);font-weight:500;margin-bottom:18px}
+.tabs{display:flex;background:var(--surface);border-radius:10px;padding:4px;margin-bottom:14px;border:1px solid var(--border)}
+.tab{flex:1;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;border-radius:7px;color:var(--text2);background:transparent;border:none;font-family:var(--font);transition:all .18s}
+.tab.active{background:var(--blue);color:#fff;box-shadow:0 2px 8px rgba(10,133,209,.25)}
+.input-row{display:flex;gap:10px}
+.input-row input{flex:1;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;padding:11px 16px;color:var(--text);font-family:var(--font);font-size:14px;font-weight:600;outline:none;transition:border .2s,box-shadow .2s}
+.input-row input::placeholder{color:var(--text3);font-weight:500}
+.input-row input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(10,133,209,.1)}
+.track-btn{background:var(--blue);color:#fff;border:none;padding:11px 22px;border-radius:10px;font-size:14px;font-family:var(--font);cursor:pointer;font-weight:700;white-space:nowrap;box-shadow:0 2px 8px rgba(10,133,209,.3);transition:background .2s,transform .1s}
+.track-btn:hover{background:var(--blue-dk)}
+.track-btn:active{transform:scale(.98)}
+.track-btn:disabled{background:#90c4e8;cursor:not-allowed;box-shadow:none}
+.err{background:var(--red-lt);border:1px solid #fecaca;border-radius:10px;padding:12px 16px;color:var(--red);font-size:13px;margin-top:14px;font-weight:600}
+
+/* hero */
+.hero{background:linear-gradient(135deg,#0A85D1 0%,#0565a8 100%);border-radius:20px;padding:26px 24px;margin-bottom:12px;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-50px;right:-50px;width:180px;height:180px;background:rgba(255,255,255,.07);border-radius:50%}
+.hero::after{content:'';position:absolute;bottom:-70px;left:-30px;width:220px;height:220px;background:rgba(255,255,255,.04);border-radius:50%}
+.hero-no{font-size:11px;color:rgba(255,255,255,.65);letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:8px;position:relative;z-index:1}
+.hero-name{font-size:27px;font-weight:800;color:#fff;margin-bottom:16px;position:relative;z-index:1;line-height:1.2}
+.hero-badges{display:flex;gap:8px;flex-wrap:wrap;position:relative;z-index:1}
+.hb{font-size:12px;font-weight:700;padding:5px 14px;border-radius:20px}
+.hb-status{background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.3)}
+.hb-delivered{background:#052e16;color:#4ade80;border:1px solid #16a34a55}
+.hb-shipped{background:#1a0f00;color:#f59e0b;border:1px solid #f59e0b44}
+.hb-date{background:rgba(255,255,255,.1);color:rgba(255,255,255,.75);border:1px solid rgba(255,255,255,.15)}
+
+/* info tiles */
+.info-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.tile{background:var(--white);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
+.tile-lbl{font-size:10px;color:var(--text3);letter-spacing:1px;text-transform:uppercase;font-weight:700;margin-bottom:6px}
+.tile-val{font-size:16px;font-weight:800;color:var(--text)}
+.tile-val.sm{font-size:13px;font-weight:600;color:var(--text2)}
+.tile-val.green{color:var(--green)}
+
+/* note */
+.note{background:var(--blue-lt);border:1px solid var(--blue-mid);border-radius:14px;padding:16px 18px;margin-bottom:12px;display:flex;gap:14px;align-items:flex-start}
+.note-icon{width:38px;height:38px;background:var(--blue);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.note-title{font-size:14px;font-weight:800;color:var(--text);margin-bottom:3px}
+.note-body{font-size:12px;color:var(--text2);line-height:1.6;font-weight:500}
+
+/* countdown */
+.cd-card{background:var(--white);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:12px}
+.cd-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
+.cd-lbl{font-size:10px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;font-weight:700;margin-bottom:4px}
+.cd-num{font-size:36px;font-weight:800;color:var(--blue);line-height:1}
+.cd-unit{font-size:12px;color:var(--text3);font-weight:600;margin-top:2px}
+.cd-pill{background:var(--blue-lt);color:var(--blue);border:1px solid var(--blue-mid);font-size:12px;font-weight:700;padding:5px 14px;border-radius:20px;white-space:nowrap;max-width:160px;text-align:right}
+.cd-pill.amber{background:var(--amber-lt);color:var(--amber);border-color:#fde68a}
+.pbar{background:#deeaf5;border-radius:99px;height:8px;overflow:hidden;margin-bottom:10px}
+.pfill{height:100%;background:linear-gradient(90deg,#0A85D1,#38b6ff);border-radius:99px;transition:width .8s ease}
 .cd-dates{display:flex;justify-content:space-between}
-.cd-dates span{font-size:12px;color:var(--muted)}
-.cd-dates .right{color:#ddd;font-weight:600}
-.postex-wrap{background:var(--card);border:1px solid var(--border);border-radius:14px;margin-bottom:8px;overflow:hidden}
-.postex-head{padding:14px 18px;border-bottom:1px solid var(--border)}
-.postex-head-label{font-size:11px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;font-weight:600}
-.tid-row{padding:14px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)}
-.tid-label{font-size:12px;color:var(--muted);margin-bottom:3px}
-.tid-value{font-size:16px;font-weight:700;color:#fff;font-family:'Plus Jakarta Sans',sans-serif;letter-spacing:1px}
-.postex-status-area{padding:16px 18px}
-.ps-loading{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted)}
-.ps-dot{width:8px;height:8px;border-radius:50%;background:var(--red);animation:pulse 1s infinite}
+.cd-dates span{font-size:12px;color:var(--text3);font-weight:500}
+.cd-dates .cd-end{color:var(--text);font-weight:700}
+
+/* section label */
+.sec-lbl{font-size:11px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;font-weight:700;margin:20px 0 10px 2px}
+
+/* courier tracking */
+.px-card{background:var(--white);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-bottom:12px}
+.px-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.px-head-lbl{font-size:11px;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;font-weight:700}
+.px-tid{background:var(--blue-lt);color:var(--blue);border:1px solid var(--blue-mid);font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:.5px}
+.px-body{padding:16px 20px}
+.px-loading{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text3);font-weight:500}
+.px-dot{width:8px;height:8px;border-radius:50%;background:var(--blue);animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.ps-row{display:flex;align-items:flex-start;gap:14px;margin-bottom:12px}
-.ps-row:last-child{margin-bottom:0}
-.ps-icon{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px}
-.ps-icon.active{background:#C4123022;border:1px solid #C4123066}
-.ps-icon.done{background:#C4123015;border:1px solid #C4123040}
-.ps-icon.pending{background:#2a2a2a;border:1px solid var(--border)}
-.ps-info{flex:1;padding-top:4px}
-.ps-name{font-size:14px;font-weight:600;color:var(--text);margin-bottom:2px;font-family:'Plus Jakarta Sans',sans-serif;display:flex;align-items:center;gap:8px}
-.ps-time{font-size:12px;color:var(--muted)}
-.ps-current-tag{font-size:10px;color:var(--red);background:#C4123015;padding:2px 7px;border-radius:4px;border:1px solid #C4123040;font-weight:600}
-.postex-link{display:block;padding:12px 18px;border-top:1px solid var(--border);font-size:13px;color:var(--muted);text-decoration:none;text-align:center;font-weight:500;transition:background .2s}
-.postex-link:hover{background:#222;color:#fff}
-.section-label{font-size:10px;color:#555;letter-spacing:2px;text-transform:uppercase;margin:14px 0 8px;padding-left:2px;font-weight:600}
-.tl-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:8px}
-.tl-item{display:flex;gap:14px;position:relative;padding-bottom:18px}
+.px-item{display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border)}
+.px-item:last-child{border-bottom:none}
+.px-ico{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.px-ico.active{background:#0A85D115;border:1px solid #0A85D140}
+.px-ico.done{background:var(--green-lt);border:1px solid #bbf7d0}
+.px-ico.pending{background:var(--surface);border:1px solid var(--border)}
+.px-label{font-size:14px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap}
+.px-now{font-size:10px;color:var(--blue);background:var(--blue-lt);padding:2px 8px;border-radius:4px;border:1px solid var(--blue-mid);font-weight:700}
+.px-time{font-size:12px;color:var(--text3);font-weight:500}
+.px-link{display:block;padding:13px 20px;border-top:1px solid var(--border);font-size:13px;color:var(--blue);text-decoration:none;text-align:center;font-weight:700;transition:background .2s;cursor:pointer;background:transparent;width:100%;border-left:none;border-right:none;border-bottom:none;font-family:var(--font)}
+.px-link:hover{background:var(--blue-lt)}
+
+/* timeline */
+.tl-card{background:var(--white);border:1px solid var(--border);border-radius:16px;padding:20px;margin-bottom:12px}
+.tl-item{display:flex;gap:16px;position:relative;padding-bottom:20px}
 .tl-item:last-child{padding-bottom:0}
-.tl-line{position:absolute;left:6px;top:18px;bottom:0;width:1.5px;background:var(--border)}
-.dot{width:14px;height:14px;border-radius:50%;flex-shrink:0;margin-top:3px;position:relative;z-index:1}
-.dot-red{background:var(--red)}
-.dot-amber{background:#f59e0b}
-.dot-green{background:#22c55e}
-.tl-status-text{font-size:14px;font-weight:700;color:var(--text);margin-bottom:3px;font-family:'Plus Jakarta Sans',sans-serif;display:flex;align-items:center;gap:8px}
-.tl-time{font-size:12px;color:var(--muted)}
-.tl-tag{font-size:10px;color:var(--red);background:#C4123015;padding:2px 7px;border-radius:4px;letter-spacing:.5px;border:1px solid #C4123040;font-weight:600}
-.tl-tag-amber{font-size:10px;color:#f59e0b;background:#f59e0b15;padding:2px 7px;border-radius:4px;letter-spacing:.5px;border:1px solid #f59e0b40;font-weight:600}
-.items-card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:8px}
-.items-header{padding:12px 18px 10px;border-bottom:1px solid var(--border);font-size:10px;color:#555;letter-spacing:2px;text-transform:uppercase;font-weight:600}
-.item-row{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;border-bottom:1px solid var(--border)}
+.tl-line{position:absolute;left:7px;top:20px;bottom:0;width:2px;background:linear-gradient(to bottom,#e2e8f0,transparent)}
+.tl-dot{width:16px;height:16px;border-radius:50%;flex-shrink:0;margin-top:3px;position:relative;z-index:1}
+.tl-dot.blue{background:var(--blue);box-shadow:0 0 0 3px var(--white),0 0 0 5px var(--blue-mid)}
+.tl-dot.amber{background:var(--amber);box-shadow:0 0 0 3px var(--white),0 0 0 5px #fde68a}
+.tl-dot.green{background:var(--green);box-shadow:0 0 0 3px var(--white),0 0 0 5px #bbf7d0}
+.tl-label{font-size:14px;font-weight:800;color:var(--text);display:flex;align-items:center;gap:8px;margin-bottom:3px;flex-wrap:wrap}
+.tl-tag{font-size:10px;color:var(--blue);background:var(--blue-lt);padding:2px 8px;border-radius:4px;border:1px solid var(--blue-mid);font-weight:700}
+.tl-tag-amber{font-size:10px;color:var(--amber);background:var(--amber-lt);padding:2px 8px;border-radius:4px;border:1px solid #fde68a;font-weight:700}
+.tl-sub{font-size:12px;color:var(--text3);font-weight:500}
+
+/* items */
+.items-card{background:var(--white);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-bottom:12px}
+.items-head{padding:13px 20px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;font-weight:700}
+.item-row{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid var(--border)}
 .item-row:last-child{border-bottom:none}
-.item-name{font-size:14px;color:var(--text);font-weight:500}
-.item-qty{font-size:12px;color:var(--muted);background:#2a2a2a;padding:3px 10px;border-radius:6px;font-weight:600;border:1px solid var(--border)}
-.empty{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:center;color:var(--muted);font-size:14px}
-.empty span{display:block;font-size:12px;color:#555;margin-top:6px}
-.error-box{background:#1a0505;border:1px solid #C4123040;border-radius:10px;padding:12px 16px;color:#f87171;font-size:13px;margin-bottom:16px}
+.item-name{font-size:14px;color:var(--text);font-weight:600}
+.item-qty{font-size:12px;color:var(--blue);background:var(--blue-lt);padding:4px 12px;border-radius:20px;font-weight:700;border:1px solid var(--blue-mid)}
 `
 
-// ─── PostEx events renderer ───────────────────────────────────────────────────
-function PostExEvents({ events }: { events: any[] | null }) {
-  const icons = ['🚚', '📦', '✅']
+function CourierEvents({ events }: { events: any[] | null }) {
+  const icons = ['🚚', '📦', '🏢', '➡️', '✅', '📍', '🔄', '↩️', '📋', '🏠', '🎯']
   if (!events) {
-    return <div className="ps-loading"><div className="ps-dot" />Fetching live status…</div>
+    return <div className="px-loading"><div className="px-dot" />Fetching live courier status…</div>
   }
   if (events.length === 0) {
-    return <div style={{ fontSize: 13, color: '#888' }}>Status not available yet.</div>
+    return <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 500 }}>Tracking info not available yet.</div>
   }
   return (
     <>
-      {events.map((ev, i) => {
-        const cls = ev.state === 'active' ? 'ps-icon active' : ev.state === 'done' ? 'ps-icon done' : 'ps-icon pending'
-        return (
-          <div key={i} className="ps-row">
-            <div className={cls}>{icons[i] || '📍'}</div>
-            <div className="ps-info">
-              <div className="ps-name">
-                {ev.label}
-                {ev.state === 'active' && <span className="ps-current-tag">NOW</span>}
-              </div>
-              <div className="ps-time">{ev.time}</div>
+      {events.map((ev, i) => (
+        <div key={i} className="px-item">
+          <div className={`px-ico ${ev.state}`}>{icons[i] || '📍'}</div>
+          <div>
+            <div className="px-label">
+              {ev.label}
+              {ev.state === 'active' && <span className="px-now">LATEST</span>}
             </div>
+            <div className="px-time">{ev.time}</div>
           </div>
-        )
-      })}
+        </div>
+      ))}
     </>
   )
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
 export default function TrackPage() {
   const [tab, setTab] = useState<'order' | 'phone'>('order')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<TrackingResult | null>(null)
-  // PostEx events: null = loading, [] = not found, array = events
-  const [postexEvents, setPostexEvents] = useState<any[] | null | undefined>(undefined)
+  const [courierEvents, setCourierEvents] = useState<any[] | null | undefined>(undefined)
 
   async function handleTrack() {
-    if (!query.trim()) { setError('Please enter your ' + (tab === 'order' ? 'order number.' : 'phone number.')); return }
-    setLoading(true); setError(''); setResult(null); setPostexEvents(undefined)
-
+    if (!query.trim()) {
+      setError('Please enter your ' + (tab === 'order' ? 'order number.' : 'phone number.'))
+      return
+    }
+    setLoading(true); setError(''); setResult(null); setCourierEvents(undefined)
     try {
       const res = await fetch('/api/track', {
         method: 'POST',
@@ -305,12 +334,10 @@ export default function TrackPage() {
       const data = await res.json()
       if (!res.ok) { setError(data.error || 'Order not found.'); return }
       setResult(data)
-
-      // Fetch PostEx live tracking if shipped or delivered
       if ((data.order.status === 'shipped' || data.order.status === 'delivered') && data.order.trackingId) {
-        setPostexEvents(null) // null = loading spinner
-        const px = await fetchPostEx(data.order.trackingId)
-        setPostexEvents(px.ok ? px.data.events : [])
+        setCourierEvents(null)
+        const cc = await fetchCallCourier(data.order.trackingId)
+        setCourierEvents(cc.ok ? cc.data.events : [])
       }
     } catch {
       setError('Network error. Please try again.')
@@ -320,137 +347,146 @@ export default function TrackPage() {
   }
 
   function switchTab(t: 'order' | 'phone') {
-    setTab(t); setQuery(''); setError(''); setResult(null); setPostexEvents(undefined)
+    setTab(t); setQuery(''); setError(''); setResult(null); setCourierEvents(undefined)
   }
 
-  // ── Render result ────────────────────────────────────────────────────────────
   function renderResult() {
     if (!result) return null
     const o = result.order
     const isDelivered = o.status === 'delivered'
-    const isShipped   = o.status === 'shipped'
+    const isShipped = o.status === 'shipped'
     const isInProcess = o.status === 'in_process'
-
     const label = STATUS_LABEL[o.status] ?? o.status
     const cd = calcCountdown(o)
-
-    const heroBadgeClass = isDelivered ? 'badge badge-delivered' : isShipped ? 'badge badge-shipped' : 'badge badge-white'
-
-    // Info grid: Confirmed + Est. Delivery / Delivered on
-    const estCard = isDelivered
-      ? <div className="info-card"><div className="info-label">Delivered on</div><div className="info-value" style={{ color: '#22c55e' }}>{fmtDate(o.updatedAt)}</div></div>
-      : <div className="info-card"><div className="info-label">Est. Delivery</div><div className="info-value sm">{cd ? cd.estRange || `By ${cd.maxDate}` : '—'}</div></div>
-
-    // Note card for in_process
-    const noteBlock = isInProcess && (
-      <div className="note-card">
-        <div className="note-dot" />
-        <div>
-          <div className="note-title">Crafting your order</div>
-          <div className="note-text">We're carefully making your custom order. We'll notify you once it ships.</div>
-        </div>
-      </div>
-    )
-
-    // Countdown / Delivery window
-    const countdownBlock = cd && !isDelivered && (
-      <div className="countdown-card">
-        <div className="cd-top">
-          <span className="cd-label">{isShipped ? 'Delivery Window' : 'Delivery Countdown'}</span>
-          <span className={`cd-badge${isShipped ? ' amber' : ''}`}>
-            {isShipped
-              ? (cd.daysLeft === 1 ? 'Arriving soon' : `${cd.daysLeft} days to deliver`)
-              : `${cd.daysLeft} day${cd.daysLeft === 1 ? '' : 's'} left`}
-          </span>
-        </div>
-        <div className="pbar"><div className="pfill" style={{ width: `${cd.prog}%` }} /></div>
-        <div className="cd-dates">
-          <span>{isShipped ? `Shipped ${cd.startFmt}` : `Confirmed ${cd.startFmt}`}</span>
-          <span className="right">By {cd.maxDate}</span>
-        </div>
-      </div>
-    )
-
-    // PostEx block (shown when shipped or delivered and trackingId exists)
-    const postexBlock = (isShipped || isDelivered) && o.trackingId && (
-      <div className="postex-wrap">
-        <div className="postex-head"><span className="postex-head-label">PostEx Live Tracking</span></div>
-        <div className="tid-row">
-          <div>
-            <div className="tid-label">Tracking ID</div>
-            <div className="tid-value">{o.trackingId}</div>
-          </div>
-        </div>
-        <div className="postex-status-area">
-          <PostExEvents events={postexEvents === undefined ? null : postexEvents} />
-        </div>
-        <a className="postex-link" href={o.postexUrl || `https://postex.pk/tracking/${o.trackingId}`} target="_blank" rel="noopener noreferrer">
-          Open on PostEx website →
-        </a>
-      </div>
-    )
-
-    // Status history timeline
     const timeline = buildTimeline(o, result.history)
-    const tlItems = timeline.map((item, i) => (
-      <div key={i} className="tl-item" style={i === timeline.length - 1 ? { paddingBottom: 0 } : {}}>
-        {i < timeline.length - 1 && <div className="tl-line" />}
-        <div className={`dot dot-${item.dot}`} />
-        <div>
-          <div className="tl-status-text">
-            {item.label}
-            {item.tag === 'current' && <span className="tl-tag">current</span>}
-            {item.tag === 'current' && isShipped && <span className="tl-tag-amber">current</span>}
-          </div>
-          <div className="tl-time">{item.sub}</div>
-        </div>
-      </div>
-    ))
 
-    // Items
-    const itemsHTML = (o.lineItems || []).map((item, i) => (
-      <div key={i} className="item-row">
-        <span className="item-name">{item.name}</span>
-        <span className="item-qty">x{item.quantity}</span>
-      </div>
-    ))
+    const heroBadge = isDelivered ? 'hb hb-delivered' : isShipped ? 'hb hb-shipped' : 'hb hb-status'
 
     return (
       <>
         {/* Hero */}
         <div className="hero">
-          <div className="hero-order">Order #{o.orderNumber}</div>
+          <div className="hero-no">Order #{o.orderNumber}</div>
           <div className="hero-name">{o.customerName || 'Your Order'}</div>
-          <div className="badges">
-            <span className={heroBadgeClass}>{label}</span>
-            <span className="badge badge-date">{fmtDate(o.createdAt)}</span>
+          <div className="hero-badges">
+            <span className={heroBadge}>{label}</span>
+            <span className="hb hb-date">{fmtDate(o.createdAt)}</span>
           </div>
         </div>
 
-        {/* Info grid */}
-        <div className="info-grid">
-          <div className="info-card">
-            <div className="info-label">Confirmed</div>
-            <div className="info-value">{fmtDate(o.createdAt)}</div>
+        {/* Info tiles */}
+        <div className="info-row">
+          <div className="tile">
+            <div className="tile-lbl">Ordered On</div>
+            <div className="tile-val">{fmtDate(o.createdAt)}</div>
           </div>
-          {estCard}
+          {isDelivered ? (
+            <div className="tile">
+              <div className="tile-lbl">Delivered On</div>
+              <div className="tile-val green">{fmtDate(o.updatedAt)}</div>
+            </div>
+          ) : (
+            <div className="tile">
+              <div className="tile-lbl">Est. Delivery</div>
+              <div className={`tile-val${cd ? ' sm' : ''}`}>
+                {cd ? cd.estRange : '10 – 15 days after confirmation'}
+              </div>
+            </div>
+          )}
         </div>
 
-        {noteBlock}
-        {countdownBlock}
-        {postexBlock}
+        {/* Note */}
+        {isInProcess && (
+          <div className="note">
+            <div className="note-icon">🎨</div>
+            <div>
+              <div className="note-title">Crafting your order</div>
+              <div className="note-body">We're carefully making your custom order. You'll be notified as soon as it ships.</div>
+            </div>
+          </div>
+        )}
 
-        {/* Timeline */}
-        <div className="section-label">Status History</div>
-        <div className="tl-card">{tlItems}</div>
+        {/* Countdown */}
+        {cd && !isDelivered && (
+          <div className="cd-card">
+            <div className="cd-top">
+              <div>
+                <div className="cd-lbl">{isShipped ? 'Delivery Window' : 'Delivery Countdown'}</div>
+                <div className="cd-num">{cd.daysLeft}</div>
+                <div className="cd-unit">day{cd.daysLeft === 1 ? '' : 's'} remaining</div>
+              </div>
+              <div className={`cd-pill${isShipped ? ' amber' : ''}`}>
+                {isShipped
+                  ? cd.daysLeft === 1 ? 'Arriving soon' : `Est. ${cd.daysLeft} days`
+                  : cd.estRange || `By ${cd.maxDate}`}
+              </div>
+            </div>
+            <div className="pbar"><div className="pfill" style={{ width: `${cd.prog}%` }} /></div>
+            <div className="cd-dates">
+              <span>{isShipped ? `Shipped ${cd.startFmt}` : `Confirmed ${cd.startFmt}`}</span>
+              <span className="cd-end">By {cd.maxDate}</span>
+            </div>
+          </div>
+        )}
+
+        {/* CallCourier live tracking */}
+        {(isShipped || isDelivered) && o.trackingId && (
+          <>
+            <div className="sec-lbl">Live Courier Tracking</div>
+            <div className="px-card">
+              <div className="px-head">
+                <span className="px-head-lbl">Call Courier Status</span>
+                <span className="px-tid">{o.trackingId}</span>
+              </div>
+              <div className="px-body">
+                <CourierEvents events={courierEvents === undefined ? null : courierEvents} />
+              </div>
+              <button
+                className="px-link"
+                onClick={() => {
+                  if (o.trackingId) {
+                    navigator.clipboard.writeText(o.trackingId).catch(() => {})
+                  }
+                  window.open(`https://callcourier.com.pk/tracking/?tc=${o.trackingId}`, '_blank')
+                }}
+              >
+                Track on Call Courier website → (CN copied ✓)
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Status history */}
+        <div className="sec-lbl">Status History</div>
+        <div className="tl-card">
+          {timeline.map((item, i) => (
+            <div key={i} className="tl-item" style={i === timeline.length - 1 ? { paddingBottom: 0 } : {}}>
+              {i < timeline.length - 1 && <div className="tl-line" />}
+              <div className={`tl-dot ${item.dot}`} />
+              <div>
+                <div className="tl-label">
+                  {item.label}
+                  {item.tag === 'current' && !isShipped && <span className="tl-tag">current</span>}
+                  {item.tag === 'current' && isShipped && <span className="tl-tag-amber">current</span>}
+                </div>
+                <div className="tl-sub">{item.sub}</div>
+              </div>
+            </div>
+          ))}
+        </div>
 
         {/* Items */}
-        {itemsHTML.length > 0 && (
+        {(o.lineItems || []).length > 0 && (
           <>
-            <div className="section-label">Items</div>
+            <div className="sec-lbl">Items</div>
             <div className="items-card">
-              <div className="items-header">Products</div>
-              {itemsHTML}
+              <div className="items-head">Products in this order</div>
+              {o.lineItems.map((item, i) => (
+                <div key={i} className="item-row">
+                  <span className="item-name">{item.name}</span>
+                  <span className="item-qty">×{item.quantity}</span>
+                </div>
+              ))}
             </div>
           </>
         )}
@@ -461,39 +497,35 @@ export default function TrackPage() {
   return (
     <>
       <style>{css}</style>
-      <div className="wrap">
-        <div className="inner">
-          {/* Header */}
-          <div className="header">
-            <div className="logo">Kovrrr</div>
-            <span className="app-sub">Order Tracker</span>
+      <div className="page">
+        <div className="topbar">
+          <div className="logo">MYZANN</div>
+          <span className="topbar-sub">Order Tracker</span>
+        </div>
+        <div className="container">
+          <div className="search-card">
+            <div className="search-title">Track your order</div>
+            <div className="search-sub">Enter your order number or phone to get live updates</div>
+            <div className="tabs">
+              <button className={`tab${tab === 'order' ? ' active' : ''}`} onClick={() => switchTab('order')}>Order Number</button>
+              <button className={`tab${tab === 'phone' ? ' active' : ''}`} onClick={() => switchTab('phone')}>Phone Number</button>
+            </div>
+            <div className="input-row">
+              <input
+                type={tab === 'phone' ? 'tel' : 'text'}
+                placeholder={tab === 'order' ? 'e.g. 2087' : 'e.g. 03001234567'}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleTrack()}
+              />
+              <button className="track-btn" onClick={handleTrack} disabled={loading}>
+                {loading ? 'Searching…' : 'Track →'}
+              </button>
+            </div>
+            {error && <div className="err">{error}</div>}
           </div>
 
-          {/* Tabs */}
-          <div className="tabs">
-            <button className={`tab${tab === 'order' ? ' active' : ''}`} onClick={() => switchTab('order')}>Order Number</button>
-            <button className={`tab${tab === 'phone' ? ' active' : ''}`} onClick={() => switchTab('phone')}>Phone Number</button>
-          </div>
-
-          {/* Search */}
-          <div className="search-row">
-            <input
-              type={tab === 'phone' ? 'tel' : 'text'}
-              placeholder={tab === 'order' ? 'Enter order number e.g. 2087' : 'Enter phone e.g. 03001234567'}
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleTrack()}
-            />
-            <button className="search-btn" onClick={handleTrack} disabled={loading}>
-              {loading ? 'Searching…' : 'Track →'}
-            </button>
-          </div>
-
-          {/* Error */}
-          {error && <div className="error-box">{error}</div>}
-
-          {/* Result */}
-          <div id="result">{renderResult()}</div>
+          {renderResult()}
         </div>
       </div>
     </>
