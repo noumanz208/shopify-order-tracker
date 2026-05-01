@@ -330,7 +330,7 @@ function PromiseBanner() {
           </svg>
         </div>
         <div className="pb-val">10</div>
-        <div className="pb-desc">Days to craft</div>
+        <div className="pb-desc">Estimated Days To Make Your Order</div>
       </div>
       <div className="pb-item">
         <div className="pb-icon-wrap">
@@ -351,7 +351,7 @@ function PromiseBanner() {
           </svg>
         </div>
         <div className="pb-val">100%</div>
-        <div className="pb-desc">Handcrafted</div>
+        <div className="pb-desc">Customised</div>
       </div>
     </div>
   )
